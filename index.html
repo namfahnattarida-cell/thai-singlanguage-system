@@ -6,50 +6,110 @@
   <title>ระบบแปลภาษามือ (Thai Sign Language)</title>
   <style>
     body { font-family: sans-serif; text-align: center; background: #f0f2f5; padding: 15px; margin: 0; }
-    h2 { color: #1a73e8; margin-bottom: 10px; }
-    #video-container { margin: 15px auto; width: 100%; max-width: 400px; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    h2 { color: #1a73e8; margin-bottom: 5px; }
+    p { color: #666; font-size: 14px; margin-top: 0; }
+    #video-container { position: relative; margin: 15px auto; width: 100%; max-width: 400px; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
     video { width: 100%; height: auto; display: block; transform: scaleX(-1); }
-    #result-box { background: white; padding: 15px; border-radius: 10px; display: inline-block; width: 80%; max-width: 360px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    #canvas { display: none; }
+    #result-box { background: white; padding: 15px; border-radius: 10px; display: inline-block; width: 85%; max-width: 360px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-top: 10px; }
     .label { font-size: 14px; color: #666; margin-bottom: 5px; }
-    .detected-text { font-size: 26px; font-weight: bold; color: #1a73e8; }
-    button { background: #1a73e8; color: white; border: none; padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 25px; margin-top: 15px; cursor: pointer; }
+    .detected-text { font-size: 28px; font-weight: bold; color: #1a73e8; }
+    .confidence { font-size: 14px; color: #34a853; margin-top: 4px; }
+    button { background: #1a73e8; color: white; border: none; padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 25px; cursor: pointer; margin-bottom: 10px; }
     button:active { background: #1557b0; }
   </style>
 </head>
 <body>
 
   <h2>ระบบแปลภาษามือไทย</h2>
+  <p>ส่องกล้องไปที่มือเพื่อแปลความหมาย real-time</p>
   
+  <button id="start-btn" onclick="startSystem()">📷 เปิดกล้องเริ่มแปลภาษามือ</button>
+
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
   </div>
 
+  <canvas id="canvas"></canvas>
+
   <div id="result-box">
     <div class="label">ผลการแปลภาษามือ:</div>
-    <div id="output-text" class="detected-text">กดปุ่มเพื่อเปิดกล้อง</div>
+    <div id="output-text" class="detected-text">รอเปิดกล้อง...</div>
+    <div id="confidence-text" class="confidence"></div>
   </div>
 
-  <br>
-  <button onclick="startCamera()">📷 เปิดกล้องเริ่มใช้งาน</button>
-
   <script>
-    async function startCamera() {
+    // -------------------------------------------------------------
+    // ใส่ข้อมูลของคุณตรงนี้
+    // -------------------------------------------------------------
+    const ROBOFLOW_MODEL_ID = "signlanguage-4zs07"; 
+    const ROBOFLOW_VERSION  = "2"; 
+    const ROBOFLOW_API_KEY  = "U04YaEJab1vc56Wcmk8l"; 
+    // -------------------------------------------------------------
+
+    let video, canvas, ctx;
+    let isDetecting = false;
+
+    async function startSystem() {
       const outputText = document.getElementById('output-text');
-      outputText.innerText = "กำลังขอสิทธิ์เปิดกล้อง...";
-      
+      document.getElementById('start-btn').style.display = 'none';
+      outputText.innerText = "กำลังเปิดกล้อง...";
+
+      video = document.getElementById('webcam');
+      canvas = document.getElementById('canvas');
+      ctx = canvas.getContext('2d');
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: "user" }, 
-          audio: false 
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
         });
-        
-        const video = document.getElementById('webcam');
         video.srcObject = stream;
-        outputText.innerText = "กล้องพร้อมใช้งานแล้ว!";
+        
+        video.onloadedmetadata = () => {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          outputText.innerText = "กำลังเริ่มตรวจจับ...";
+          isDetecting = true;
+          detectFrame(); 
+        };
       } catch (err) {
-        alert("ไม่สามารถเปิดกล้องได้: " + err.message);
+        alert("ไม่สามารถเข้าถึงกล้องได้: " + err.message);
         outputText.innerText = "เกิดข้อผิดพลาดในการเปิดกล้อง";
       }
+    }
+
+    async function detectFrame() {
+      if (!isDetecting) return;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.7).split(',')[1];
+
+      try {
+        const response = await fetch(`https://detect.roboflow.com/${ROBOFLOW_MODEL_ID}/${ROBOFLOW_VERSION}?api_key=${ROBOFLOW_API_KEY}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: imageBase64
+        });
+
+        const data = await response.json();
+        
+        if (data.predictions && data.predictions.length > 0) {
+          const bestPrediction = data.predictions.reduce((max, p) => p.confidence > max.confidence ? p : max, data.predictions[0]);
+          
+          if (bestPrediction.confidence > 0.4) {
+            document.getElementById('output-text').innerText = bestPrediction.class;
+            document.getElementById('confidence-text').innerText = `ความมั่นใจ: ${(bestPrediction.confidence * 100).toFixed(1)}%`;
+          }
+        } else {
+          document.getElementById('output-text').innerText = "กำลังตรวจจับท่าทาง...";
+          document.getElementById('confidence-text').innerText = "";
+        }
+      } catch (err) {
+        console.error("Roboflow API Error:", err);
+      }
+
+      setTimeout(detectFrame, 500);
     }
   </script>
 
